@@ -1,0 +1,16 @@
+name: "clspv"
+description:
+    "Clspv is a compiler for OpenCL C to Vulkan compute shaders"
+
+third_party {
+homepage: "https://github.com/google/clspv"
+  identifier {
+    type: "Git"
+    value: "https://github.com/google/clspv"
+    primary_source: true
+    version: "24998ff410ed9e70e8a2b07c82c1e7fae77070a9"
+  }
+  version: "24998ff410ed9e70e8a2b07c82c1e7fae77070a9"
+  last_upgrade_date { year: 2025 month: 4 day: 15 }
+  license_type: NOTICE
+}
