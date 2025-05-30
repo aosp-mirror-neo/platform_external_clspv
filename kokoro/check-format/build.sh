@@ -13,18 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd )"
+ROOT_DIR=$(cd "$SCRIPT_DIR"/../.. >/dev/null 2>&1 && pwd)
+
 # Fail on any error.
 set -e
 # Display commands being run.
 set -x
 
-ROOT_DIR=`pwd`
-SCRIPT_DIR=`dirname "$BASH_SOURCE"`
-
 docker run --rm -i \
   --volume "${ROOT_DIR}:${ROOT_DIR}" \
-  --volume "${KOKORO_ARTIFACTS_DIR}:/mnt/artifacts" \
   --workdir "${ROOT_DIR}" \
-  --env BUILD_TOOLCHAIN="clang" \
-  --entrypoint "${ROOT_DIR}/${SCRIPT_DIR}/build-docker.sh" \
-  "gcr.io/shaderc-build/radial-build:latest"
+  "us-east4-docker.pkg.dev/shaderc-build/radial-docker/ubuntu-24.04-amd64/formatter" \
+  "${SCRIPT_DIR}/build-docker.sh"

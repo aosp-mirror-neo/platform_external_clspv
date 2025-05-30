@@ -13,10 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd )"
+ROOT_DIR=$(cd "$SCRIPT_DIR"/../.. >/dev/null 2>&1 && pwd)
+
 # Fail on any error.
 set -e
 # Display commands being run.
 set -x
 
-DIR=$(dirname $0)
-$DIR/build.sh FULL
+docker run --rm -i \
+  --volume "${ROOT_DIR}:${ROOT_DIR}" \
+  --workdir "${ROOT_DIR}" \
+  "us-east4-docker.pkg.dev/shaderc-build/radial-docker/ubuntu-24.04-amd64/formatter" \
+  "${SCRIPT_DIR}/build-docker.sh" FULL
