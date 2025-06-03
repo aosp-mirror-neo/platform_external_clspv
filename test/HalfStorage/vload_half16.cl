@@ -1,12 +1,12 @@
-// RUN: clspv %target %s -o %t.spv -long-vector -arch=spir
+// RUN: clspv %target %s -o %t.spv -long-vector -arch=spir -spv-version=1.4
 // RUN: spirv-dis -o %t2.spvasm %t.spv
 // RUN: FileCheck %s < %t2.spvasm --check-prefixes=CHECK,CHECK-32
-// RUN: spirv-val --target-env vulkan1.0 %t.spv
+// RUN: spirv-val --target-env vulkan1.2 %t.spv
 
-// RUN: clspv %target %s -o %t.spv -long-vector -arch=spir64
+// RUN: clspv %target %s -o %t.spv -long-vector -arch=spir64 -spv-version=1.4
 // RUN: spirv-dis -o %t2.spvasm %t.spv
 // RUN: FileCheck %s < %t2.spvasm --check-prefixes=CHECK,CHECK-64
-// RUN: spirv-val --target-env vulkan1.0 %t.spv
+// RUN: spirv-val --target-env vulkan1.2 %t.spv
 
 __kernel void test(__global half *a, int b, __global float16 *dst) {
     *dst = vload_half16(b, a);
@@ -34,19 +34,24 @@ __kernel void test(__global half *a, int b, __global float16 *dst) {
 // CHECK-DAG: [[uint_14:%[^ ]+]] = OpConstant [[uint]] 14
 // CHECK-DAG: [[uint_15:%[^ ]+]] = OpConstant [[uint]] 15
 // CHECK-64-DAG: [[ulong_1:%[^ ]+]] = OpConstant [[ulong]] 1
+// CHECK-64-DAG: [[ulong_4:%[^ ]+]] = OpConstant [[ulong]] 4
+// CHECK-64-DAG: [[ulong_5:%[^ ]+]] = OpConstant [[ulong]] 5
 
 // CHECK-DAG: [[uint4_array:%[^ ]+]] = OpTypeRuntimeArray [[uint4]]
 // CHECK-DAG: [[uint4_ptr:%[^ ]+]] = OpTypeStruct [[uint4_array]]
 // CHECK-DAG: [[global_uint4_ptr:%[^ ]+]] = OpTypePointer StorageBuffer [[uint4_ptr]]
 
 // CHECK: [[a:%[^ ]+]] = OpVariable [[global_uint4_ptr]] StorageBuffer
+// CHECK: OpCopyLogical
 // CHECK: [[b:%[^ ]+]] = OpCompositeExtract [[uint]] {{.*}} 0
 
 // CHECK-64: [[b_long:%[^ ]+]] = OpSConvert [[ulong]] [[b]]
-// CHECK-64-DAG: [[bx16:%[^ ]+]] = OpShiftLeftLogical [[ulong]] [[b_long]] [[ulong_1]]
-// CHECK-32-DAG: [[bx16:%[^ ]+]] = OpShiftLeftLogical [[uint]] [[b]] [[uint_1]]
-// CHECK-64-DAG: [[idx8:%[^ ]+]] = OpBitwiseOr [[ulong]] [[bx16]] [[ulong_1]]
-// CHECK-32-DAG: [[idx8:%[^ ]+]] = OpBitwiseOr [[uint]] [[bx16]] [[uint_1]]
+// CHECK-64-DAG: [[bx16_:%[^ ]+]] = OpShiftLeftLogical [[ulong]] [[b_long]] [[ulong_5]]
+// CHECK-64-DAG: [[bx16:%[^ ]+]] = OpShiftRightLogical [[ulong]] [[bx16_]] [[ulong_4]]
+// CHECK-64-DAG: [[idx8:%[^ ]+]] = OpIAdd [[ulong]] [[bx16]] [[ulong_1]]
+// CHECK-32-DAG: [[bx16_:%[^ ]+]] = OpShiftLeftLogical [[uint]] [[b]] [[uint_5]]
+// CHECK-32-DAG: [[bx16:%[^ ]+]] = OpShiftRightLogical [[uint]] [[bx16_]] [[uint_4]]
+// CHECK-32-DAG: [[idx8:%[^ ]+]] = OpIAdd [[uint]] [[bx16]] [[uint_1]]
 
 // CHECK-DAG: [[addr0:%[^ ]+]] = OpAccessChain {{.*}} [[a]] [[uint_0]] [[bx16]]
 // CHECK-DAG: [[addr1:%[^ ]+]] = OpAccessChain {{.*}} [[a]] [[uint_0]] [[idx8]]

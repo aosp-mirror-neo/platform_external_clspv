@@ -280,15 +280,14 @@ Value *MemoryOrderSemantics(Value *order, bool is_global,
   auto is_acquire = builder.CreateICmpEQ(order, acquire);
   auto is_release = builder.CreateICmpEQ(order, release);
   auto is_acq_rel = builder.CreateICmpEQ(order, acq_rel);
+
   auto semantics =
-      builder.CreateSelect(is_relaxed, RelaxedSemantics, base_order);
-  semantics = builder.CreateSelect(is_acquire, AcquireSemantics, semantics);
+      builder.CreateSelect(is_acquire, AcquireSemantics, base_order);
   semantics = builder.CreateSelect(is_release, ReleaseSemantics, semantics);
   semantics = builder.CreateSelect(is_acq_rel, AcqRelSemantics, semantics);
   if (include_storage)
-    return builder.CreateOr({storage, semantics});
-  else
-    return semantics;
+    semantics = builder.CreateOr({storage, semantics});
+  return builder.CreateSelect(is_relaxed, RelaxedSemantics, semantics);
 }
 
 Value *MemoryScope(Value *scope, bool is_global, Instruction *InsertBefore) {
@@ -1373,16 +1372,24 @@ bool ReplaceOpenCLBuiltinPass::replaceBarrier(Function &F, bool subgroup) {
         CI->getIterator());
 
     // And combine the above together, also adding in
-    // MemorySemanticsSequentiallyConsistentMask.
+    // MemorySemanticsAcquireReleaseMask if semantics is not zero
     auto MemorySemantics1 =
         BinaryOperator::Create(Instruction::Or, MemorySemanticsWorkgroup,
-                               ConstantAcquireRelease, "", CI->getIterator());
+                               MemorySemanticsUniform, "", CI->getIterator());
     auto MemorySemantics2 =
-        BinaryOperator::Create(Instruction::Or, MemorySemanticsUniform,
-                               MemorySemanticsImage, "", CI->getIterator());
-    auto MemorySemantics =
         BinaryOperator::Create(Instruction::Or, MemorySemantics1,
-                               MemorySemantics2, "", CI->getIterator());
+                               MemorySemanticsImage, "", CI->getIterator());
+    auto MemorySemantics3 =
+        BinaryOperator::Create(Instruction::Or, MemorySemantics2,
+                               ConstantAcquireRelease, "", CI->getIterator());
+
+    auto ZeroValue = Constant::getNullValue(MemorySemantics2->getType());
+    auto IsMemorySemanticsZero =
+        CmpInst::Create(Instruction::ICmp, CmpInst::ICMP_EQ, MemorySemantics2,
+                        ZeroValue, "", CI->getIterator());
+    auto MemorySemantics =
+        SelectInst::Create(IsMemorySemanticsZero, ZeroValue, MemorySemantics3,
+                           "", CI->getIterator());
 
     // If the memory scope is not specified explicitly, it is either Subgroup
     // or Workgroup depending on the type of barrier.

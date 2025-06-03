@@ -630,11 +630,14 @@ struct SPIRVProducerPassImpl {
   void GeneratePrintfReflection();
   void GeneratePushConstantReflection();
   void GenerateSpecConstantReflection();
+  void GenerateWorkgroupSizeReflection();
   void AddArgumentReflection(const Function &F, SPIRVID kernel_decl,
                              const std::string &name, clspv::ArgKind arg_kind,
                              uint32_t ordinal, uint32_t descriptor_set,
                              uint32_t binding, uint32_t offset, uint32_t size,
                              uint32_t spec_id, uint32_t elem_size);
+
+  SPIRVID ChangeLayout(SPIRVID object, Type *type, bool removeLayout);
 
 private:
   Module *module;
@@ -811,6 +814,8 @@ private:
   DenseMap<Function *, SPIRVID> KernelDeclarations;
 
   StringMap<std::string> functionAttrStrings;
+
+  DenseMap<uint32_t, uint32_t> WorkgroupVariableSizeMap;
 
 public:
   static SPIRVProducerPassImpl *Ptr;
@@ -1364,10 +1369,9 @@ void SPIRVProducerPassImpl::FindTypesForResourceVars() {
       work_list.push_back(ele_ty);
       if (!Hack_generate_runtime_array_stride_early) {
         // Remember this array type for deferred decoration.
-        auto needs_layout = SpvVersion() >= SPIRVVersion::SPIRV_1_4;
         getTypesNeedingArrayStride().insert(
             StrideType(GetTypeAllocSize(ele_ty, module->getDataLayout()),
-                       getSPIRVType(type, needs_layout)));
+                       getSPIRVType(type, true)));
       }
       break;
     }
@@ -1588,6 +1592,48 @@ SPIRVID SPIRVProducerPassImpl::addSPIRVGlobalVariable(const SPIRVID &TypeID,
   return VID;
 }
 
+SPIRVID SPIRVProducerPassImpl::ChangeLayout(SPIRVID object, Type *type,
+                                            bool removeLayout) {
+  auto dst_id = getSPIRVType(type, !removeLayout);
+
+  SPIRVID copy = object;
+  if (Option::SpvVersion() >= SPIRVVersion::SPIRV_1_4) {
+    SPIRVOperandVec Ops;
+    Ops << dst_id << object;
+    copy = addSPIRVInst(spv::OpCopyLogical, Ops);
+  } else {
+    // Recursively perform a manual OpCopyLogical.
+    auto struct_ty = dyn_cast<StructType>(type);
+    auto array_ty = dyn_cast<ArrayType>(type);
+    if (struct_ty || array_ty) {
+      SPIRVOperandVec constructOps;
+      constructOps << dst_id;
+      uint32_t num_eles =
+          struct_ty ? struct_ty->getNumElements() : array_ty->getNumElements();
+      for (uint32_t i = 0; i < num_eles; i++) {
+        auto sub_type = struct_ty ? struct_ty->getElementType(i)
+                                  : array_ty->getElementType();
+
+        // Extract from src
+        SPIRVOperandVec Ops;
+        auto type_id = getSPIRVType(sub_type, removeLayout);
+        Ops << type_id << object << i;
+        auto extract = addSPIRVInst(spv::OpCompositeExtract, Ops);
+
+        // Swap layout
+        auto swapped = ChangeLayout(extract, sub_type, removeLayout);
+
+        // Add to the composite construct
+        constructOps << swapped;
+      }
+
+      copy = addSPIRVInst(spv::OpCompositeConstruct, constructOps);
+    }
+  }
+
+  return copy;
+}
+
 Type *SPIRVProducerPassImpl::CanonicalType(Type *type) {
   if (type->isIntegerTy()) {
     auto bit_width = static_cast<uint32_t>(type->getPrimitiveSizeInBits());
@@ -1657,16 +1703,14 @@ Type *SPIRVProducerPassImpl::CanonicalType(Type *type) {
 }
 
 bool SPIRVProducerPassImpl::PointerRequiresLayout(unsigned aspace) {
-  if (Option::SpvVersion() >= SPIRVVersion::SPIRV_1_4) {
-    switch (aspace) {
-    case AddressSpace::PushConstant:
-    case AddressSpace::Uniform:
-    case AddressSpace::Global:
-    case AddressSpace::Constant:
-      return true;
-    default:
-      break;
-    }
+  switch (aspace) {
+  case AddressSpace::PushConstant:
+  case AddressSpace::Uniform:
+  case AddressSpace::Global:
+  case AddressSpace::Constant:
+    return true;
+  default:
+    break;
   }
   return false;
 }
@@ -2006,11 +2050,9 @@ SPIRVID SPIRVProducerPassImpl::getSPIRVType(Type *Ty, bool needs_layout) {
     // Generate OpMemberDecorate unless we are generating it for the canonical
     // type.
     StructType *canonical = cast<StructType>(CanonicalType(STy));
-    bool use_layout =
-        (Option::SpvVersion() < SPIRVVersion::SPIRV_1_4) || needs_layout;
     if (TypesNeedingLayout.idFor(STy) &&
         (canonical == STy || !TypesNeedingLayout.idFor(canonical)) &&
-        use_layout) {
+        needs_layout) {
       for (unsigned MemberIdx = 0; MemberIdx < STy->getNumElements();
            MemberIdx++) {
         // Ops[0] = Structure Type ID
@@ -2030,7 +2072,7 @@ SPIRVID SPIRVProducerPassImpl::getSPIRVType(Type *Ty, bool needs_layout) {
     // Generate OpDecorate unless we are generating it for the canonical type.
     if (StructTypesNeedingBlock.idFor(STy) &&
         (canonical == STy || !StructTypesNeedingBlock.idFor(canonical)) &&
-        use_layout) {
+        needs_layout) {
       Ops.clear();
       // Use Block decorations with StorageBuffer storage class.
       Ops << RID << spv::DecorationBlock;
@@ -2100,8 +2142,7 @@ SPIRVID SPIRVProducerPassImpl::getSPIRVType(Type *Ty, bool needs_layout) {
 
       RID = addSPIRVInst<kTypes>(spv::OpTypeRuntimeArray, Ops);
 
-      if (Hack_generate_runtime_array_stride_early &&
-          (Option::SpvVersion() < SPIRVVersion::SPIRV_1_4 || needs_layout)) {
+      if (Hack_generate_runtime_array_stride_early && needs_layout) {
         // Generate OpDecorate.
 
         // Ops[0] = Target ID
@@ -2142,7 +2183,7 @@ SPIRVID SPIRVProducerPassImpl::getSPIRVType(Type *Ty, bool needs_layout) {
       RID = addSPIRVInst<kTypes>(spv::OpTypeArray, Ops);
 
       // Remember to generate ArrayStride later
-      if (needs_layout || SpvVersion() < SPIRVVersion::SPIRV_1_4) {
+      if (needs_layout) {
         getTypesNeedingArrayStride().insert(StrideType(
             GetTypeAllocSize(ArrTy->getElementType(), module->getDataLayout()),
             RID));
@@ -2910,6 +2951,11 @@ void SPIRVProducerPassImpl::GenerateGlobalVar(GlobalVariable &GV) {
   if (!(module_scope_constant_external_init &&
         clspv::Option::PhysicalStorageBuffers())) {
     var_id = addSPIRVGlobalVariable(ptr_id, spvSC, InitializerID, interface);
+    if (spvSC == spv::StorageClass::StorageClassWorkgroup) {
+      WorkgroupVariableSizeMap.insert(std::make_pair(
+          var_id.get(),
+          BitcastUtils::SizeInBits(DL, GV.getValueType()) / CHAR_BIT));
+    }
     VMap[&GV] = var_id;
   }
 
@@ -4706,7 +4752,7 @@ SPIRVID SPIRVProducerPassImpl::GenerateInstructionFromCall(CallInst *Call) {
 
     // Do not replace functions with implementations.
     if (EInst && EInst == glsl::ExtInst::ExtInstFma &&
-        !clspv::Option::UnsafeMath() &&
+        !clspv::Option::UnsafeMath() && !clspv::Option::ClMadEnable() &&
         clspv::Option::UseNativeBuiltins().count(
             clspv::Builtins::BuiltinType::kFma) == 0 &&
         Call->getType()->getScalarType()->isHalfTy()) {
@@ -5847,13 +5893,8 @@ void SPIRVProducerPassImpl::GenerateInstruction(Instruction &I) {
     RID = addSPIRVInst(spv::OpLoad, Ops);
 
     auto no_layout_id = getSPIRVType(LD->getType());
-    if (Option::SpvVersion() >= SPIRVVersion::SPIRV_1_4 &&
-        no_layout_id.get() != result_type_id.get()) {
-      // Generate an OpCopyLogical to convert from the laid out type to a
-      // non-laid out type.
-      Ops.clear();
-      Ops << no_layout_id << RID;
-      RID = addSPIRVInst(spv::OpCopyLogical, Ops);
+    if (no_layout_id.get() != result_type_id.get()) {
+      RID = ChangeLayout(RID, LD->getType(), /* removeLayout = */ true);
     }
     break;
   }
@@ -5875,13 +5916,9 @@ void SPIRVProducerPassImpl::GenerateInstruction(Instruction &I) {
     auto value = ST->getValueOperand();
     auto value_ty = value->getType();
     auto needs_layout = PointerRequiresLayout(ptr_ty->getPointerAddressSpace());
-    if (Option::SpvVersion() >= SPIRVVersion::SPIRV_1_4 && needs_layout &&
-        (value_ty->isArrayTy() || value_ty->isStructTy())) {
-      // Generate an OpCopyLogical to convert from the non-laid type to the
-      // laid out type.
-      Ops << getSPIRVType(value_ty, needs_layout) << value;
-      RID = addSPIRVInst(spv::OpCopyLogical, Ops);
-      Ops.clear();
+    if (needs_layout && (value_ty->isArrayTy() || value_ty->isStructTy())) {
+      RID = ChangeLayout(getSPIRVValue(value), value_ty,
+                         /* removeLayout = */ false);
     }
 
     // Ops[0] = Pointer ID
@@ -6962,6 +6999,19 @@ void SPIRVProducerPassImpl::GenerateReflection() {
   GeneratePrintfReflection();
   GeneratePushConstantReflection();
   GenerateSpecConstantReflection();
+  GenerateWorkgroupSizeReflection();
+}
+
+void SPIRVProducerPassImpl::GenerateWorkgroupSizeReflection() {
+  auto import_id = getReflectionImport();
+  auto void_id = getSPIRVType(Type::getVoidTy(module->getContext()));
+  for (auto workgroup_var : WorkgroupVariableSizeMap) {
+    SPIRVOperandVec Ops;
+    Ops << void_id << import_id << reflection::ExtInstWorkgroupVariableSize
+        << workgroup_var.getFirst()
+        << getSPIRVInt32Constant(workgroup_var.getSecond());
+    addSPIRVInst<kReflection>(spv::OpExtInst, Ops);
+  }
 }
 
 void SPIRVProducerPassImpl::GeneratePushConstantReflection() {
@@ -7141,7 +7191,7 @@ void SPIRVProducerPassImpl::GenerateKernelReflection() {
     }
 
     uint32_t kernel_flags = reflection::ExtKernelPropertyFlags::None;
-    if (F.hasMetadata(clspv::PrintfKernelMetadataName())) {
+    if (module->getNamedMetadata(PrintfMetadataName())) {
       kernel_flags |= reflection::ExtKernelPropertyFlags::MayUsePrintf;
     }
 

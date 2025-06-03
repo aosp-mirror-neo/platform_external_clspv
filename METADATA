@@ -1,16 +1,21 @@
-name: "clspv"
-description:
-    "Clspv is a compiler for OpenCL C to Vulkan compute shaders"
+# This project was upgraded with external_updater.
+# Usage: tools/external_updater/updater.sh update external/clspv
+# For more info, check https://cs.android.com/android/platform/superproject/main/+/main:tools/external_updater/README.md
 
+name: "clspv"
+description: "Clspv is a compiler for OpenCL C to Vulkan compute shaders"
 third_party {
-homepage: "https://github.com/google/clspv"
+  license_type: NOTICE
+  last_upgrade_date {
+    year: 2025
+    month: 5
+    day: 30
+  }
+  homepage: "https://github.com/google/clspv"
   identifier {
     type: "Git"
     value: "https://github.com/google/clspv"
+    version: "1bd9b3fd84a9ef39033933073f2ea88f114134df"
     primary_source: true
-    version: "24998ff410ed9e70e8a2b07c82c1e7fae77070a9"
   }
-  version: "24998ff410ed9e70e8a2b07c82c1e7fae77070a9"
-  last_upgrade_date { year: 2025 month: 4 day: 15 }
-  license_type: NOTICE
 }
