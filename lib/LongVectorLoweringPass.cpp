@@ -99,11 +99,17 @@ Function *getIntrinsicScalarVersion(Function &Intrinsic) {
   case Intrinsic::exp:
   case Intrinsic::fabs:
   case Intrinsic::floor:
+  case Intrinsic::fma:
   case Intrinsic::fmuladd:
   case Intrinsic::fshl:
   case Intrinsic::log:
+  case Intrinsic::smax:
+  case Intrinsic::umax:
   case Intrinsic::pow:
+  case Intrinsic::rint:
   case Intrinsic::sin:
+  case Intrinsic::sqrt:
+  case Intrinsic::trunc:
   case Intrinsic::sadd_sat:
   case Intrinsic::uadd_sat:
   case Intrinsic::ssub_sat:
@@ -239,6 +245,7 @@ Function *getBIFScalarVersion(Function &Builtin) {
   case clspv::Builtins::kMax:
   case clspv::Builtins::kMin:
   case clspv::Builtins::kMix:
+  case clspv::Builtins::kNativeExp:
   case clspv::Builtins::kPopcount:
   case clspv::Builtins::kPow:
   case clspv::Builtins::kPowr:

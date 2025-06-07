@@ -450,7 +450,13 @@ int SetCompilerInstanceOptions(
   instance.getPreprocessorOpts().addMacroDef("VULKAN=100");
 
   // Add the __OPENCL_VERSION__ macro.
-  instance.getPreprocessorOpts().addMacroDef("__OPENCL_VERSION__=120");
+  if (standard == clang::LangStandard::lang_opencl20) {
+    instance.getPreprocessorOpts().addMacroDef("__OPENCL_VERSION__=200");
+  } else if (standard == clang::LangStandard::lang_opencl30) {
+    instance.getPreprocessorOpts().addMacroDef("__OPENCL_VERSION__=300");
+  } else {
+    instance.getPreprocessorOpts().addMacroDef("__OPENCL_VERSION__=120");
+  }
 
   instance.setTarget(PrepareTargetInfo(instance));
 
@@ -542,11 +548,20 @@ int RunPassPipeline(llvm::Module &M, llvm::raw_svector_ostream *binaryStream) {
   pb.registerPipelineStartEPCallback([](llvm::ModulePassManager &pm,
                                         llvm::OptimizationLevel level) {
     pm.addPass(clspv::AnnotationToMetadataPass());
-    pm.addPass(clspv::WrapKernelPass());
     pm.addPass(clspv::NativeMathPass());
     pm.addPass(clspv::ZeroInitializeAllocasPass());
     pm.addPass(clspv::KernelArgNamesToMetadataPass());
     pm.addPass(clspv::AddFunctionAttributesPass());
+
+    // Handle physical pointer arguments by converting them to POD integers,
+    // and update all uses to bitcast them to a pointer first. This allows these
+    // arguments to be handled in later passes as if they were regular PODs.
+    // This pass needs to run before an interation of
+    // AutoPodArgsPass/DeclarePushConstantsPass/DefineOpenCLWorkItemBuiltinsPass.
+    if (clspv::Option::PhysicalStorageBuffers()) {
+      pm.addPass(clspv::PhysicalPointerArgsPass());
+    }
+
     pm.addPass(clspv::AutoPodArgsPass());
     pm.addPass(clspv::DeclarePushConstantsPass());
     pm.addPass(clspv::DefineOpenCLWorkItemBuiltinsPass());
@@ -568,13 +583,6 @@ int RunPassPipeline(llvm::Module &M, llvm::raw_svector_ostream *binaryStream) {
 
     pm.addPass(clspv::UndoByvalPass());
     pm.addPass(clspv::UndoSRetPass());
-
-    // Handle physical pointer arguments by converting them to POD integers,
-    // and update all uses to bitcast them to a pointer first. This allows these
-    // arguments to be handled in later passes as if they were regular PODs.
-    if (clspv::Option::PhysicalStorageBuffers()) {
-      pm.addPass(clspv::PhysicalPointerArgsPass());
-    }
 
     pm.addPass(llvm::createModuleToFunctionPassAdaptor(
         llvm::InferAddressSpacesPass(clspv::AddressSpace::Generic)));

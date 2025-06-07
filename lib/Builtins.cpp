@@ -27,9 +27,15 @@ using namespace clspv;
 ////////////////////////////////////////////////////////////////////////////////
 ////  Convert Builtin function name to a Type enum
 ////////////////////////////////////////////////////////////////////////////////
-Builtins::BuiltinType Builtins::LookupBuiltinType(const std::string &name) {
-  if (name.find("__clc_convert_") == 0 || name.find("convert_") == 0) {
-    return Builtins::kConvert;
+Builtins::BuiltinType
+Builtins::LookupBuiltinType(const std::string &builtin_name) {
+  const char *clc_prefix = "__clc_";
+  std::string name = builtin_name;
+  if (name.find(clc_prefix) == 0) {
+    name.erase(0, strlen(clc_prefix));
+  }
+  if (name.find("spirv.op") == 0) {
+    return Builtins::kSpirvOp;
   }
 
 // Build static map of builtin function names
@@ -71,7 +77,16 @@ std::string GetUnmangledName(const std::string &str, size_t *pos) {
   }
 
   *pos = name_pos + name_len;
-  return str.substr(size_t(name_pos), name_len);
+  auto substr = str.substr(size_t(name_pos), name_len);
+  if (substr != "spirv.op") {
+    return substr;
+  }
+  auto args_pos = str.find(".", *pos + 1);
+  if (args_pos == std::string::npos) {
+    return substr;
+  }
+  *pos = args_pos + 1;
+  return str.substr(size_t(name_pos), *pos - name_pos);
 }
 
 // Capture parameter type and qualifiers starting at |pos|
@@ -697,7 +712,8 @@ Builtins::getExtInstEnum(const Builtins::FunctionInfo &func_info) {
   }
 
   // TODO: improve this by checking the intrinsic id.
-  if (func_info.getName().find("llvm.fmuladd.") == 0) {
+  if (func_info.getName().find("llvm.fmuladd.") == 0 ||
+      func_info.getName().find("llvm.fma.") == 0) {
     return glsl::ExtInst::ExtInstFma;
   }
   if (func_info.getName().find("llvm.sqrt.") == 0) {
