@@ -33,13 +33,14 @@ cc_library_static {
         "clspv_include_clspv_spirv_glsl_hpp",
         "clspv_include_clspv_spirv_reflection_hpp",
     ],
+    optimize_for_size: true,
+    vendor_available: true,
     header_libs: [
         "SPIRV-Headers-includes",
         "clang-includes",
         "llvm-includes",
     ],
     export_include_dirs: ["include"],
-    optimize_for_size: true,
 }
 
 cc_genrule {
@@ -48,6 +49,7 @@ cc_genrule {
     srcs: [":SpirvHeaders_include_spirv_unified1_extinst_nonsemantic_clspvreflection_grammar_json"],
     out: ["clspv/spirv_reflection.hpp"],
     tool_files: ["cmake/spirv_ext_inst.py"],
+    vendor_available: true,
 }
 
 cc_genrule {
@@ -56,6 +58,7 @@ cc_genrule {
     srcs: [":SpirvHeaders_include_spirv_unified1_extinst_glsl_std_450_grammar_json"],
     out: ["clspv/spirv_glsl.hpp"],
     tool_files: ["cmake/spirv_ext_inst.py"],
+    vendor_available: true,
 }
 
 cc_genrule {
@@ -64,6 +67,7 @@ cc_genrule {
     srcs: [":SpirvHeaders_include_spirv_unified1_spirv_hpp"],
     out: ["clspv/spirv_c_strings.hpp"],
     tool_files: ["cmake/spirv_c_strings.py"],
+    vendor_available: true,
 }
 
 cc_genrule {
@@ -72,6 +76,7 @@ cc_genrule {
     srcs: [":LibclcBins_tools_libclc_clspv--_bc"],
     out: ["clspv/clspv_builtin_library.h"],
     tool_files: ["cmake/bake_file.py"],
+    vendor_available: true,
 }
 
 cc_genrule {
@@ -79,6 +84,7 @@ cc_genrule {
     cmd: "$(location) --output-file=$(location cmake/clspv-builtins.h)",
     out: ["cmake/clspv-builtins.h"],
     tool_files: ["cmake/define_clspv_builtins.py"],
+    vendor_available: true,
 }
 
 cc_genrule {
@@ -90,6 +96,7 @@ cc_genrule {
     ],
     out: ["clspv/opencl_builtins_header.h"],
     tool_files: ["cmake/bake_file.py"],
+    vendor_available: true,
 }
 
 cc_genrule {
@@ -98,4 +105,5 @@ cc_genrule {
     srcs: [":LibclcBins_tools_libclc_clspv64--_bc"],
     out: ["clspv/clspv64_builtin_library.h"],
     tool_files: ["cmake/bake_file.py"],
+    vendor_available: true,
 }
