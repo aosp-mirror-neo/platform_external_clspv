@@ -836,6 +836,17 @@ constants as follows:
   `CapabilityGroupNonUniformVote` capability.
 - `sub_group_any()` is mapped to `OpGroupNonUniformAny` operation. Requires
   `CapabilityGroupNonUniformVote` capability.
+- `sub_group_elect()` is mapped to `OpGroupNonUniformElect` operation. Requires
+  `CapabilityGroupNonUniformVote` capability.
+- `sub_group_ballot()` is mapped to `OpGroupNonUniformBallot` operation.
+  Requires `CapabilityGroupNonUniformBallot` capability.
+- `sub_group_shuffle()` is mapped to `OpGroupNonUniformShuffle` operation.
+  Requires `CapabilityGroupNonUniformShuffle` capability.
+- `sub_group_shuffle_xor()` is mapped to `OpGroupNonUniformShuffleXor` operation.
+  Requires `CapabilityGroupNonUniformShuffle` capability.
+- `sub_group_rotate()` is mapped to `OpGroupNonUniformRotateKHR` operation.
+  Requires `CapabilityGroupNonUniformRotateKHR` capability and the
+  `SPV_KHR_subgroup_rotate` extension.
 - `sub_group_<group_op>_add()` is mapped to `OpGroupNonUniformIAdd` operation
   for Integer types and `OpGroupNonUniformFAdd` operation for Float types.
   Requires `CapabilityGroupNonUniformArithmetic` capability.
