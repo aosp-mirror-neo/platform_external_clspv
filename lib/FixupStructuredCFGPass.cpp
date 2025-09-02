@@ -154,7 +154,7 @@ void clspv::FixupStructuredCFGPass::isolateConvergentLatch(
       latch_terminator->setSuccessor(idx, new_latch);
 
       // Update phis to use the new basic block.
-      for (auto iter = BB->begin(); &*iter != BB->getFirstNonPHI(); ++iter) {
+      for (auto iter = BB->phis().begin(); iter != BB->phis().end(); iter++) {
         PHINode *phi = cast<PHINode>(&*iter);
         phi->replaceIncomingBlockWith(latch, new_latch);
       }
@@ -247,7 +247,7 @@ void clspv::FixupStructuredCFGPass::isolateContinue(
           // Split the phi nodes so that all predecessors from within the loop
           // are part of a new phi in the new exit block.
           for (auto iter = exit_block->begin();
-               &*iter != exit_block->getFirstNonPHI(); ++iter) {
+               iter != exit_block->getFirstNonPHIIt(); ++iter) {
             PHINode *phi = cast<PHINode>(&*iter);
             SmallVector<Value *, 4> phi_values;
             for (auto pred : loop_preds) {

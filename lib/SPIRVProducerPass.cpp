@@ -2437,7 +2437,7 @@ SPIRVID SPIRVProducerPassImpl::getSPIRVConstant(Constant *C) {
     if (ConstExpr->getNumUses() == 1) {
       auto *User = *ConstExpr->user_begin();
       auto *EquivInstr = ConstExpr->getAsInstruction();
-      EquivInstr->insertBefore(dyn_cast<Instruction>(User));
+      EquivInstr->insertBefore(dyn_cast<Instruction>(User)->getIterator());
       GenerateInstruction(*EquivInstr);
       RID = VMap[EquivInstr];
     } else {
@@ -2598,7 +2598,8 @@ void SPIRVProducerPassImpl::GenerateResourceVars() {
     case clspv::ArgKind::StorageImage:
     case clspv::ArgKind::StorageTexelBuffer:
     case clspv::ArgKind::UniformTexelBuffer:
-      type = PointerType::get(info->data_type, AddressSpace::UniformConstant);
+      type =
+          PointerType::get(module->getContext(), AddressSpace::UniformConstant);
       break;
     default:
       break;
@@ -3650,7 +3651,7 @@ SPIRVID SPIRVProducerPassImpl::getSPIRVBuiltin(spv::BuiltIn BID,
     addCapability(Cap);
 
     auto *data_ty = IntegerType::get(module->getContext(), 32);
-    auto *ptr_ty = PointerType::get(data_ty, AddressSpace::Input);
+    auto *ptr_ty = PointerType::get(module->getContext(), AddressSpace::Input);
     auto ptr_id = getSPIRVPointerType(ptr_ty, data_ty);
     RID = addSPIRVGlobalVariable(ptr_id, spv::StorageClassInput);
 
@@ -3764,7 +3765,8 @@ SPIRVProducerPassImpl::GenerateClspvInstruction(CallInst *Call,
 
     SPIRVOperandVec Ops;
     Ops << getSPIRVPointerType(
-               PointerType::get(i32, GV->getType()->getPointerAddressSpace()),
+               PointerType::get(module->getContext(),
+                                GV->getType()->getPointerAddressSpace()),
                i32)
         << getSPIRVValue(GV)
         << getSPIRVInt32Constant(GV->getValueType()->getStructNumElements() - 1)
@@ -4095,7 +4097,8 @@ SPIRVProducerPassImpl::GenerateImageInstruction(CallInst *Call,
 
     SPIRVOperandVec Ops;
     Ops << getSPIRVPointerType(
-               PointerType::get(i32, GV->getType()->getPointerAddressSpace()),
+               PointerType::get(module->getContext(),
+                                GV->getType()->getPointerAddressSpace()),
                i32)
         << getSPIRVValue(GV)
         << getSPIRVInt32Constant(GV->getValueType()->getStructNumElements() - 1)
@@ -4161,6 +4164,14 @@ SPIRVProducerPassImpl::GenerateSubgroupInstruction(
     addCapability(spv::CapabilityGroupNonUniformVote);
     op = spv::OpGroupNonUniformAny;
     break;
+  case Builtins::kSubGroupBallot:
+    addCapability(spv::CapabilityGroupNonUniformBallot);
+    op = spv::OpGroupNonUniformBallot;
+    break;
+  case Builtins::kSubGroupElect:
+    addCapability(spv::CapabilityGroupNonUniformVote);
+    op = spv::OpGroupNonUniformElect;
+    break;
   case Builtins::kSubGroupReduceAdd:
   case Builtins::kSubGroupScanExclusiveAdd:
   case Builtins::kSubGroupScanInclusiveAdd: {
@@ -4198,6 +4209,21 @@ SPIRVProducerPassImpl::GenerateSubgroupInstruction(
     }
     break;
   }
+  case Builtins::kSubGroupShuffle:
+    addCapability(spv::CapabilityGroupNonUniformShuffle);
+    op = spv::OpGroupNonUniformShuffle;
+    break;
+  case Builtins::kSubGroupShuffleXor:
+    addCapability(spv::CapabilityGroupNonUniformShuffle);
+    op = spv::OpGroupNonUniformShuffleXor;
+    break;
+  case Builtins::kSubGroupRotate:
+    addCapability(spv::CapabilityGroupNonUniformRotateKHR);
+    // OpGroupNonUniformRotateKHR is defined by the SPV_KHR_subgroup_rotate
+    // extension,thus it needs to be explicitly enabled.
+    addSPIRVInst<kExtensions>(spv::OpExtension, "SPV_KHR_subgroup_rotate");
+    op = spv::OpGroupNonUniformRotateKHR;
+    break;
 
   case Builtins::kGetEnqueuedNumSubGroups:
   case Builtins::kGetMaxSubGroupSize:
@@ -4230,7 +4256,8 @@ SPIRVProducerPassImpl::GenerateSubgroupInstruction(
   switch (FuncInfo.getType()) {
   case Builtins::kSubGroupAny:
   case Builtins::kSubGroupAll:
-    // SPIR-V needs a bool return type for any/all.
+  case Builtins::kSubGroupElect:
+    // SPIR-V needs a bool return type for any/all/elect.
     Operands << getSPIRVType(Type::getInt1Ty(module->getContext()));
     break;
   default:
@@ -4280,6 +4307,34 @@ SPIRVProducerPassImpl::GenerateSubgroupInstruction(
     Ops << Call->getType() << subgroup << ConstantInt::get(Call->getType(), 1)
         << ConstantInt::get(Call->getType(), 0);
     RID = addSPIRVInst(spv::OpSelect, Ops);
+    break;
+  }
+  case Builtins::kSubGroupBallot: {
+    SPIRVOperandVec Ops;
+    Ops << getSPIRVType(Type::getInt1Ty(module->getContext()))
+        << Call->getArgOperand(0)
+        << ConstantInt::get(Call->getArgOperand(0)->getType(), 0);
+    auto cmp = addSPIRVInst(spv::OpINotEqual, Ops);
+    Ops.clear();
+    Operands << cmp;
+    RID = addSPIRVInst(op, Operands);
+    break;
+  }
+  case Builtins::kSubGroupElect: {
+    auto Int1Ty = Type::getInt1Ty(module->getContext());
+    auto Int32Ty = Type::getInt32Ty(module->getContext());
+
+    SPIRVOperandVec Ops;
+    Ops << getSPIRVType(Int1Ty)
+        << ConstantInt::get(Int32Ty, spv::ScopeSubgroup);
+
+    RID = addSPIRVInst(spv::OpGroupNonUniformElect, Ops);
+
+    SPIRVOperandVec SelectOps;
+    SelectOps << getSPIRVType(Int32Ty) << RID << ConstantInt::get(Int32Ty, 1)
+              << ConstantInt::get(Int32Ty, 0);
+
+    RID = addSPIRVInst(spv::OpSelect, SelectOps);
     break;
   }
   default:
@@ -5997,9 +6052,10 @@ void SPIRVProducerPassImpl::GenerateInstruction(Instruction &I) {
     const auto ConstantScopeDevice = getSPIRVInt32Constant(spv::ScopeDevice);
     Ops << ConstantScopeDevice;
 
+    // Vulkan disallows sequentially consistent.
     const auto ConstantMemorySemantics =
         getSPIRVInt32Constant(spv::MemorySemanticsUniformMemoryMask |
-                              spv::MemorySemanticsSequentiallyConsistentMask);
+                              spv::MemorySemanticsAcquireReleaseMask);
     Ops << ConstantMemorySemantics << AtomicRMW->getValOperand();
 
     RID = addSPIRVInst(opcode, Ops);
@@ -6558,7 +6614,9 @@ void SPIRVProducerPassImpl::WriteSPIRVBinary(
     case spv::OpSUDotAccSat:
     case spv::OpGroupNonUniformAll:
     case spv::OpGroupNonUniformAny:
+    case spv::OpGroupNonUniformBallot:
     case spv::OpGroupNonUniformBroadcast:
+    case spv::OpGroupNonUniformElect:
     case spv::OpGroupNonUniformIAdd:
     case spv::OpGroupNonUniformFAdd:
     case spv::OpGroupNonUniformSMin:
@@ -6566,7 +6624,10 @@ void SPIRVProducerPassImpl::WriteSPIRVBinary(
     case spv::OpGroupNonUniformFMin:
     case spv::OpGroupNonUniformSMax:
     case spv::OpGroupNonUniformUMax:
-    case spv::OpGroupNonUniformFMax: {
+    case spv::OpGroupNonUniformFMax:
+    case spv::OpGroupNonUniformShuffle:
+    case spv::OpGroupNonUniformShuffleXor:
+    case spv::OpGroupNonUniformRotateKHR: {
       WriteWordCountAndOpcode(Inst);
       WriteOperand(Ops[0]);
       WriteResultID(Inst);

@@ -199,8 +199,7 @@ struct OpenCLBuiltinMemoryBuffer final : public llvm::MemoryBuffer {
 clang::TargetInfo *PrepareTargetInfo(CompilerInstance &instance) {
   // Create target info
   auto TargetInfo = clang::TargetInfo::CreateTargetInfo(
-      instance.getDiagnostics(),
-      std::make_shared<clang::TargetOptions>(instance.getTargetOpts()));
+      instance.getDiagnostics(), instance.getTargetOpts());
 
   // The SPIR target enables all possible options, disable the ones we don't
   // want
@@ -302,7 +301,6 @@ int SetCompilerInstanceOptions(
   instance.getLangOpts().RTTI = false;
   instance.getLangOpts().RTTIData = false;
   instance.getLangOpts().MathErrno = false;
-  instance.getLangOpts().Optimize = false;
   instance.getLangOpts().NoBuiltin = true;
   instance.getLangOpts().ModulesSearchAll = false;
   instance.getLangOpts().SinglePrecisionConstants = true;
@@ -357,6 +355,11 @@ int SetCompilerInstanceOptions(
     // https://github.com/llvm/llvm-project/blob/main/clang/include/clang/Basic/OpenCLExtensions.def
     instance.getPreprocessorOpts().addMacroDef(
         "cl_khr_subgroup_extended_types");
+    instance.getPreprocessorOpts().addMacroDef("cl_khr_subgroup_shuffle");
+    instance.getPreprocessorOpts().addMacroDef("cl_khr_subgroup_rotate");
+    instance.getPreprocessorOpts().addMacroDef("cl_khr_subgroup_ballot");
+    instance.getPreprocessorOpts().addMacroDef(
+        "cl_khr_subgroup_non_uniform_vote");
   }
 
   if (clspv::Option::ArmIntegerDotProduct()) {
@@ -408,7 +411,7 @@ int SetCompilerInstanceOptions(
   instance.createDiagnostics(
       *llvm::vfs::getRealFileSystem(),
       new clang::TextDiagnosticPrinter(*diagnosticsStream,
-                                       &instance.getDiagnosticOpts()),
+                                       instance.getDiagnosticOpts()),
       true);
   instance.getDiagnostics().setWarningsAsErrors(WarningsAsErrors);
   instance.getDiagnostics().setEnableAllWarnings(true);
@@ -1375,14 +1378,18 @@ ClspvError clspvCompileFromSourcesString(
   err =
       clspv::CompileFromSourcesString(vPrograms, sOptions, &binary, &buildLog);
 
-  if (!buildLog.empty()) {
-    // Alloc and copy backing mem for build log
-    *output_log = static_cast<char *>(std::malloc(buildLog.size() + 1));
-    if (*output_log == NULL) {
-      return CLSPV_OUT_OF_HOST_MEM;
+  if (output_log != NULL) {
+    if (!buildLog.empty()) {
+      // Alloc and copy backing mem for build log
+      *output_log = static_cast<char *>(std::malloc(buildLog.size() + 1));
+      if (*output_log == NULL) {
+        return CLSPV_OUT_OF_HOST_MEM;
+      }
+      std::memcpy(static_cast<void *>(*output_log), buildLog.c_str(),
+                  buildLog.size() + 1);
+    } else {
+      *(output_log) = static_cast<char *>(NULL);
     }
-    std::memcpy(static_cast<void *>(*output_log), buildLog.c_str(),
-                buildLog.size() + 1);
   }
 
   if (err != 0) {
@@ -1391,6 +1398,12 @@ ClspvError clspvCompileFromSourcesString(
 
   // Alloc and copy backing mem for spv output
   size_t spv_bytes = binary.size() * sizeof(uint32_t);
+  if (spv_bytes == 0) {
+    /** Early return: when allocation is not needed. */
+    *output_binary = static_cast<char *>(NULL);
+    return CLSPV_SUCCESS;
+  }
+
   *output_binary = static_cast<char *>(std::malloc(spv_bytes));
   if (*output_binary == NULL) {
     return CLSPV_OUT_OF_HOST_MEM;
