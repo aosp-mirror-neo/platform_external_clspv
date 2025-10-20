@@ -408,11 +408,11 @@ int SetCompilerInstanceOptions(
   instance.getLangOpts().GNUInline = true;
 
   // Set up diagnostics
-  instance.createDiagnostics(
-      *llvm::vfs::getRealFileSystem(),
+  instance.setDiagnostics(CompilerInstance::createDiagnostics(
+      *llvm::vfs::getRealFileSystem(), instance.getDiagnosticOpts(),
       new clang::TextDiagnosticPrinter(*diagnosticsStream,
                                        instance.getDiagnosticOpts()),
-      true);
+      true));
   instance.getDiagnostics().setWarningsAsErrors(WarningsAsErrors);
   instance.getDiagnostics().setEnableAllWarnings(true);
 
@@ -463,8 +463,9 @@ int SetCompilerInstanceOptions(
 
   instance.setTarget(PrepareTargetInfo(instance));
 
+  instance.setVirtualFileSystem(llvm::vfs::getRealFileSystem());
   instance.createFileManager();
-  instance.createSourceManager(instance.getFileManager());
+  instance.createSourceManager();
 
 #ifdef _MSC_VER
   std::string includePrefix("include\\");
@@ -624,6 +625,10 @@ int RunPassPipeline(llvm::Module &M, llvm::raw_svector_ostream *binaryStream) {
     if (clspv::Option::LongVectorSupport()) {
       pm.addPass(clspv::LongVectorLoweringPass());
     }
+
+    // Early attempt to normalize global variables before optimizations make
+    // reconstructing type information more difficult.
+    pm.addPass(clspv::NormalizeGlobalVariablesPass());
 
     // Try to deal with pointer bitcasts early. This can prevent problems like
     // issue #409 where LLVM is looser about access chain addressing than
