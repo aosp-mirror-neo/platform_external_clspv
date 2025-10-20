@@ -145,7 +145,7 @@ bool clspv::SimplifyPointerBitcastPass::runOnBitcastFromBitcast(
       auto CE = dyn_cast<ConstantExpr>(Bitcast->getOperand(0));
       assert(CE && CE->getOpcode() == Instruction::BitCast);
       OtherBitcast = CE->getAsInstruction();
-      OtherBitcast->insertBefore(Bitcast);
+      OtherBitcast->insertBefore(Bitcast->getIterator());
     }
     LLVM_DEBUG(dbgs() << "\n##runOnBitcastFromBitcast:\nremove:";
                Bitcast->dump());
@@ -710,10 +710,10 @@ bool clspv::SimplifyPointerBitcastPass::runOnUpgradeableConstantCasts(
         return false;
       }
     } else {
-      // if gep contains dynamic indices, only consider i8 gep with and look for
-      // mul and shl composing the single indice.
-      if (gep->getSourceElementType() != Type::getInt8Ty(M.getContext()) &&
-          gep->getNumIndices() == 1) {
+      // if gep contains dynamic indices, only consider i8 gep width and look
+      // for mul and shl composing the single indice.
+      if (gep->getSourceElementType() != Type::getInt8Ty(M.getContext()) ||
+          gep->getNumIndices() != 1) {
         return false;
       }
       cstVal = 0;
@@ -1113,9 +1113,9 @@ bool clspv::SimplifyPointerBitcastPass::runOnPHIFromGEP(Module &M) const {
     for (int i = 0; i < Steps + 1; i++) {
       Idxs.push_back(B.getInt32(0));
     }
-    auto new_gep = GetElementPtrInst::Create(
-        gep->getResultElementType(), gep, Idxs, "",
-        gep->getNextNonDebugInstruction()->getIterator());
+    auto new_gep =
+        GetElementPtrInst::Create(gep->getResultElementType(), gep, Idxs, "",
+                                  gep->getNextNode()->getIterator());
     for (unsigned i = 0; i < phi->getNumIncomingValues(); i++) {
       if (phi->getIncomingValue(i) != gep) {
         continue;
