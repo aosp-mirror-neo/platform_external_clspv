@@ -8,14 +8,14 @@ third_party {
   license_type: NOTICE
   last_upgrade_date {
     year: 2025
-    month: 10
-    day: 20
+    month: 11
+    day: 13
   }
   homepage: "https://github.com/google/clspv"
   identifier {
     type: "Git"
     value: "https://github.com/google/clspv"
-    version: "eb067f4668e6c82725f2db3f08804a877e25c4cd"
+    version: "b7962e8514d8e49bdb446318be27a2d719824d66"
     primary_source: true
   }
 }
