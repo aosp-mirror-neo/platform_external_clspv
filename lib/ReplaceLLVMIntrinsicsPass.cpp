@@ -104,6 +104,20 @@ bool clspv::ReplaceLLVMIntrinsicsPass::runOnFunction(Function &F) {
   case Intrinsic::lifetime_start:
   case Intrinsic::lifetime_end:
     return removeIntrinsicDeclaration(F);
+  case Intrinsic::vector_reduce_add:
+    return replaceVectorReduce(F, llvm::Instruction::BinaryOps::Add, false);
+  case Intrinsic::vector_reduce_and:
+    return replaceVectorReduce(F, llvm::Instruction::BinaryOps::And, false);
+  case Intrinsic::vector_reduce_fadd:
+    return replaceVectorReduce(F, llvm::Instruction::BinaryOps::FAdd, true);
+  case Intrinsic::vector_reduce_fmul:
+    return replaceVectorReduce(F, llvm::Instruction::BinaryOps::FMul, true);
+  case Intrinsic::vector_reduce_mul:
+    return replaceVectorReduce(F, llvm::Instruction::BinaryOps::Mul, false);
+  case Intrinsic::vector_reduce_or:
+    return replaceVectorReduce(F, llvm::Instruction::BinaryOps::Or, false);
+  case Intrinsic::vector_reduce_xor:
+    return replaceVectorReduce(F, llvm::Instruction::BinaryOps::Xor, false);
   default:
     break;
   }
@@ -401,39 +415,47 @@ bool clspv::ReplaceLLVMIntrinsicsPass::replaceMemcpy(Module &M) {
 
         auto Dst = CI->getArgOperand(0);
         auto Src = CI->getArgOperand(1);
-        auto DstTy = clspv::InferType(Dst, M.getContext(), &type_cache);
-        auto SrcTy = clspv::InferType(Src, M.getContext(), &type_cache);
+        if (!Option::UntypedPointerAddressSpace(
+                Dst->getType()->getPointerAddressSpace()) ||
+            !Option::UntypedPointerAddressSpace(
+                Src->getType()->getPointerAddressSpace())) {
+          auto DstTy = clspv::InferType(Dst, M.getContext(), &type_cache);
+          auto SrcTy = clspv::InferType(Src, M.getContext(), &type_cache);
 
-        auto Size = dyn_cast<ConstantInt>(CI->getArgOperand(2))->getZExtValue();
+          auto Size =
+              dyn_cast<ConstantInt>(CI->getArgOperand(2))->getZExtValue();
 
-        IRBuilder<> Builder(CI);
-        Type *ElemTy;
-        if (DstTy == SrcTy && SrcTy != nullptr &&
-            ((Size % (BitcastUtils::SizeInBits(Layout, SrcTy) / CHAR_BIT)) ==
-             0)) {
-          ElemTy = SrcTy;
-        } else {
-          ElemTy = UpdateTy(M.getContext(), Size);
+          Type *ElemTy;
+          if (DstTy == SrcTy && SrcTy != nullptr &&
+              ((Size % (BitcastUtils::SizeInBits(Layout, SrcTy) / CHAR_BIT)) ==
+               0)) {
+            ElemTy = SrcTy;
+          } else {
+            ElemTy = UpdateTy(M.getContext(), Size);
+          }
+          auto ElemSize = Layout.getTypeSizeInBits(ElemTy) / CHAR_BIT;
+
+          IRBuilder<> Builder(CI);
+          for (unsigned i = 0; i < Size / ElemSize; ++i) {
+            auto Index = ConstantInt::get(I32Ty, i);
+            SmallVector<Value *, 3> Indices = {Index};
+
+            // Avoid the builder for Src in order to prevent the folder from
+            // creating constant expressions for constant memcpys.
+            auto SrcElemPtr = GetElementPtrInst::CreateInBounds(
+                ElemTy, Src, Indices, "", CI->getIterator());
+            auto Srci = Builder.CreateLoad(ElemTy, SrcElemPtr, Volatile);
+            auto DstElemPtr = Builder.CreateGEP(ElemTy, Dst, Indices);
+            Builder.CreateStore(Srci, DstElemPtr, Volatile);
+          }
+
+          // Erase the call.
+          CI->eraseFromParent();
         }
-        auto ElemSize = Layout.getTypeSizeInBits(ElemTy) / CHAR_BIT;
-
-        for (unsigned i = 0; i < Size / ElemSize; ++i) {
-          auto Index = ConstantInt::get(I32Ty, i);
-          SmallVector<Value *, 3> Indices = {Index};
-
-          // Avoid the builder for Src in order to prevent the folder from
-          // creating constant expressions for constant memcpys.
-          auto SrcElemPtr = GetElementPtrInst::CreateInBounds(
-              ElemTy, Src, Indices, "", CI->getIterator());
-          auto Srci = Builder.CreateLoad(ElemTy, SrcElemPtr, Volatile);
-          auto DstElemPtr = Builder.CreateGEP(ElemTy, Dst, Indices);
-          Builder.CreateStore(Srci, DstElemPtr, Volatile);
-        }
-
-        // Erase the call.
-        CI->eraseFromParent();
       }
-      DeadFunctions.push_back(&F);
+
+      if (F.user_empty())
+        DeadFunctions.push_back(&F);
     }
   }
 
@@ -535,8 +557,11 @@ bool clspv::ReplaceLLVMIntrinsicsPass::replaceCopysign(Function &F) {
     // Sign bit masks
     auto SignBit = IntTy->getScalarSizeInBits() - 1;
     auto SignBitMask = 1 << SignBit;
-    auto SignBitMaskValue = ConstantInt::get(IntTy, SignBitMask);
-    auto NotSignBitMaskValue = ConstantInt::get(IntTy, ~SignBitMask);
+    auto SignBitMaskValue = ConstantInt::get(
+        IntTy, SignBitMask, /* isSigned = */ false, /* implicitTrunc = */ true);
+    auto NotMask = ~SignBitMask;
+    auto NotSignBitMaskValue = ConstantInt::get(
+        IntTy, NotMask, /* isSigned = */ false, /* implicitTrunc = */ true);
 
     IRBuilder<> Builder(CI);
 
@@ -667,5 +692,32 @@ bool clspv::ReplaceLLVMIntrinsicsPass::replaceAddSubSat(Function &F,
       auto cmp = builder.CreateICmpEQ(carry_borrow, Constant::getNullValue(ty));
       return builder.CreateSelect(cmp, add_sub, clamp_value);
     }
+  });
+}
+
+bool clspv::ReplaceLLVMIntrinsicsPass::replaceVectorReduce(
+    Function &F, Instruction::BinaryOps op, bool with_start_value) {
+  return replaceCallsWithValue(F, [&F, with_start_value, op](CallInst *CI) {
+    llvm::Value *Acc, *Vector;
+    uint32_t index;
+    IRBuilder<> Builder(CI);
+    auto int32 = Type::getInt32Ty(F.getContext());
+    if (with_start_value) {
+      Acc = CI->getOperand(0);
+      Vector = CI->getOperand(1);
+      index = 0;
+    } else {
+      index = 1;
+      Vector = CI->getOperand(0);
+      Acc = Builder.CreateExtractElement(Vector, ConstantInt::get(int32, 0));
+    }
+    for (uint32_t id = index;
+         id < cast<FixedVectorType>(Vector->getType())->getNumElements();
+         id++) {
+      Acc = Builder.CreateBinOp(
+          op, Acc,
+          Builder.CreateExtractElement(Vector, ConstantInt::get(int32, id)));
+    }
+    return Acc;
   });
 }
