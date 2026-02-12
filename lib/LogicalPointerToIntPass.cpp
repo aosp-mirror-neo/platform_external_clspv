@@ -99,6 +99,7 @@ clspv::LogicalPointerToIntPass::run(Module &M, ModuleAnalysisManager &MAM) {
 
   SmallVector<Instruction *, 8> InstrsToProcess;
   SmallVector<ICmpInst *, 8> PointerICmpToProcess;
+  SmallVector<Instruction *, 8> NullPtrToProcess;
   for (auto &F : M) {
     BitcastUtils::RemoveCstExprFromFunction(&F);
 
@@ -110,6 +111,12 @@ clspv::LogicalPointerToIntPass::run(Module &M, ModuleAnalysisManager &MAM) {
                     cast<PointerType>(Cast->getOperand(0)->getType())) {
               if (IsTargetAddrSpace(PtrTy->getAddressSpace())) {
                 InstrsToProcess.push_back(Cast);
+              } else if (auto AddrSpaceCast =
+                             dyn_cast<AddrSpaceCastInst>(Cast->getOperand(0))) {
+                if (isa<ConstantPointerNull>(
+                        AddrSpaceCast->getPointerOperand())) {
+                  NullPtrToProcess.push_back(Cast);
+                }
               }
             }
           } else if (Cast->getOpcode() == Instruction::IntToPtr) {
@@ -154,13 +161,13 @@ clspv::LogicalPointerToIntPass::run(Module &M, ModuleAnalysisManager &MAM) {
 
     auto *PtrOp = Instr->getOperand(0);
     Value *MemBase = nullptr;
-    uint64_t CstOffset = 0;
+    int64_t CstOffset = 0;
     Value *DynOffset = nullptr;
 
     if (processValue(M.getDataLayout(), PtrOp, CstOffset, DynOffset, MemBase)) {
       auto BaseAddr = getMemBaseAddr(MemBase);
       Value *Replacement;
-      Replacement = ConstantInt::get(IntTy, BaseAddr + CstOffset);
+      Replacement = ConstantInt::get(IntTy, BaseAddr + CstOffset, false, true);
       if (DynOffset != nullptr) {
         IRBuilder<> B(Instr);
         Replacement = B.CreateAdd(Replacement, DynOffset);
@@ -168,20 +175,23 @@ clspv::LogicalPointerToIntPass::run(Module &M, ModuleAnalysisManager &MAM) {
       Instr->replaceAllUsesWith(Replacement);
     }
   }
+  for (auto *Instr : NullPtrToProcess) {
+    Instr->replaceAllUsesWith(ConstantInt::get(Instr->getType(), 0));
+  }
 
   return PA;
 }
 
 bool clspv::LogicalPointerToIntPass::processValue(const DataLayout &DL,
                                                   Value *Val,
-                                                  uint64_t &CstOffset,
+                                                  int64_t &CstOffset,
                                                   llvm::Value *&DynOffset,
                                                   Value *&MemBase) {
   if (auto *GEP = dyn_cast<GetElementPtrInst>(Val)) {
     // Convert GEP indices to byte offset
     IRBuilder<> B(GEP);
     size_t SmallerBitWidths;
-    uint64_t CstVal = 0;
+    int64_t CstVal = 0;
     Value *DynVal = nullptr;
     BitcastUtils::ExtractOffsetFromGEP(DL, B, GEP, CstVal, DynVal,
                                        SmallerBitWidths);

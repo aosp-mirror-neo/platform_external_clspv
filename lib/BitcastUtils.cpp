@@ -937,17 +937,34 @@ bool IsImplicitCasts(Module &M, DenseMap<Value *, Type *> &type_cache,
   // pointer (e.g. gep, alloca, or global variable).
   if (auto *gep = dyn_cast<GetElementPtrInst>(&I)) {
     source = gep->getPointerOperand();
+    if (clspv::Option::UntypedPointerAddressSpace(
+            source->getType()->getPointerAddressSpace())) {
+      return false;
+    }
     source_ty = clspv::InferType(source, M.getContext(), &type_cache);
     dest_ty = gep->getSourceElementType();
   } else if (auto *ld = dyn_cast<LoadInst>(&I)) {
     source = ld->getPointerOperand();
+    if (clspv::Option::UntypedPointerAddressSpace(
+            source->getType()->getPointerAddressSpace())) {
+      return false;
+    }
     source_ty = clspv::InferType(source, M.getContext(), &type_cache);
     dest_ty = ld->getType();
   } else if (auto *st = dyn_cast<StoreInst>(&I)) {
     source = st->getPointerOperand();
+    if (clspv::Option::UntypedPointerAddressSpace(
+            source->getType()->getPointerAddressSpace())) {
+      return false;
+    }
     source_ty = clspv::InferType(source, M.getContext(), &type_cache);
     dest_ty = st->getValueOperand()->getType();
   } else if (auto *phi = dyn_cast<PHINode>(&I)) {
+    if (phi->getType()->isPointerTy() &&
+        clspv::Option::UntypedPointerAddressSpace(
+            phi->getType()->getPointerAddressSpace())) {
+      return false;
+    }
     auto RefTy = clspv::InferType(phi, M.getContext(), &type_cache);
     if (RefTy) {
       for (unsigned i = 0; i < phi->getNumIncomingValues(); i++) {
@@ -963,12 +980,21 @@ bool IsImplicitCasts(Module &M, DenseMap<Value *, Type *> &type_cache,
     }
   } else if (auto *atomic = dyn_cast<AtomicRMWInst>(&I)) {
     source = atomic->getPointerOperand();
+    if (clspv::Option::UntypedPointerAddressSpace(
+            source->getType()->getPointerAddressSpace())) {
+      return false;
+    }
     source_ty = clspv::InferType(source, M.getContext(), &type_cache);
     dest_ty = atomic->getType();
   } else if (auto *call = dyn_cast<CallInst>(&I)) {
     auto &info = clspv::Builtins::Lookup(call->getCalledFunction());
     if (BUILTIN_IN_GROUP(info.getType(), Atomic)) {
       source = call->getArgOperand(0);
+      if (source->getType()->isPointerTy() &&
+          clspv::Option::UntypedPointerAddressSpace(
+              source->getType()->getPointerAddressSpace())) {
+        return false;
+      }
       source_ty = clspv::InferType(source, M.getContext(), &type_cache);
       if (info.getType() == clspv::Builtins::kAtomicStore ||
           info.getType() == clspv::Builtins::kAtomicStoreExplicit) {
@@ -984,6 +1010,10 @@ bool IsImplicitCasts(Module &M, DenseMap<Value *, Type *> &type_cache,
           opcode <= static_cast<uint64_t>(spv::Op::OpAtomicXor);
       if (atomic) {
         source = call->getArgOperand(1);
+        if (clspv::Option::UntypedPointerAddressSpace(
+                source->getType()->getPointerAddressSpace())) {
+          return false;
+        }
         source_ty = clspv::InferType(source, M.getContext(), &type_cache);
         if (opcode == static_cast<uint64_t>(spv::Op::OpAtomicStore)) {
           dest_ty = call->getArgOperand(4)->getType();
@@ -998,6 +1028,12 @@ bool IsImplicitCasts(Module &M, DenseMap<Value *, Type *> &type_cache,
       // complicated issues.
       auto Dst = call->getArgOperand(0);
       auto Src = call->getArgOperand(1);
+      if (clspv::Option::UntypedPointerAddressSpace(
+              Dst->getType()->getPointerAddressSpace()) &&
+          clspv::Option::UntypedPointerAddressSpace(
+              Src->getType()->getPointerAddressSpace())) {
+        return false;
+      }
       auto DstTy = clspv::InferType(Dst, M.getContext(), &type_cache);
       auto SrcTy = clspv::InferType(Src, M.getContext(), &type_cache);
       if (DstTy && SrcTy && DstTy != SrcTy) {
@@ -1184,7 +1220,7 @@ bool FindAliasingContainedType(Type *ContainingTy, Type *TargetTy, int &Steps,
 }
 
 void ExtractOffsetFromGEP(const DataLayout &DataLayout, IRBuilder<> &Builder,
-                          GetElementPtrInst *GEP, uint64_t &CstVal,
+                          GetElementPtrInst *GEP, int64_t &CstVal,
                           Value *&DynVal, size_t &SmallerBitWidths) {
   CstVal = 0;
   DynVal = nullptr;
@@ -1207,7 +1243,7 @@ void ExtractOffsetFromGEP(const DataLayout &DataLayout, IRBuilder<> &Builder,
       auto offset = DataLayout.getStructLayout(STy)->getElementOffsetInBits(
           Cst->getZExtValue());
       if (offset % SmallerBitWidths != 0) {
-        CstVal = (CstVal * SmallerBitWidths + offset) / CHAR_BIT;
+        CstVal = (CstVal * (int64_t)SmallerBitWidths + offset) / CHAR_BIT;
         if (DynVal) {
           DynVal = CreateMul(Builder, SmallerBitWidths / CHAR_BIT, DynVal);
         }
@@ -1220,7 +1256,7 @@ void ExtractOffsetFromGEP(const DataLayout &DataLayout, IRBuilder<> &Builder,
           SizeInBits(DataLayout, reworkUnsizedType(DataLayout, NextTy)) /
           SmallerBitWidths;
       if (auto Cst = dyn_cast<ConstantInt>(Op)) {
-        CstVal += Cst->getZExtValue() * size;
+        CstVal += Cst->getSExtValue() * size;
       } else {
         Value *Mul = CreateMul(Builder, size, Op);
         if (DynVal) {
@@ -1234,25 +1270,25 @@ void ExtractOffsetFromGEP(const DataLayout &DataLayout, IRBuilder<> &Builder,
   }
 }
 
-uint64_t GoThroughTypeAtOffset(const DataLayout &DataLayout,
-                               IRBuilder<> &Builder, Type *Ty, Type *TargetTy,
-                               uint64_t Offset, SmallVector<Value *, 2> *Idxs) {
+int64_t GoThroughTypeAtOffset(const DataLayout &DataLayout,
+                              IRBuilder<> &Builder, Type *Ty, Type *TargetTy,
+                              int64_t Offset, SmallVector<Value *, 2> *Idxs) {
 #ifndef NDEBUG
   Type *SrcTy = Ty;
 #endif
   if (!(Ty->isVectorTy() || Ty->isArrayTy() || Ty->isStructTy())) {
     auto size = SizeInBits(DataLayout, Ty);
     if (Idxs) {
-      auto val = Offset / size;
+      auto val = Offset / (int64_t)size;
       if (Idxs->size() > 0) {
         if (auto lastIdxCst = dyn_cast<ConstantInt>(Idxs->back())) {
-          val += lastIdxCst->getZExtValue();
+          val += lastIdxCst->getSExtValue();
           Idxs->pop_back();
         }
       }
       Idxs->push_back(Builder.getInt32(val));
     }
-    Offset %= size;
+    Offset %= (int64_t)size;
     return Offset;
   }
   while ((Ty->isVectorTy() || Ty->isArrayTy() || Ty->isStructTy()) &&
@@ -1273,9 +1309,9 @@ uint64_t GoThroughTypeAtOffset(const DataLayout &DataLayout,
       Ty = NextTy;
       auto size = SizeInBits(DataLayout, Ty);
       if (Idxs) {
-        Idxs->push_back(Builder.getInt32(Offset / size));
+        Idxs->push_back(Builder.getInt32(Offset / (int64_t)size));
       }
-      Offset %= size;
+      Offset %= (int64_t)size;
     }
     assert(Idxs == nullptr ||
            GetElementPtrInst::getIndexedType(SrcTy, *Idxs) == Ty);
@@ -1295,7 +1331,7 @@ bool IsClspvResourceOrLocal(Value *val) {
 
 SmallVector<Value *, 2>
 GetIdxsForTyFromOffset(const DataLayout &DataLayout, IRBuilder<> &Builder,
-                       Type *SrcTy, Type *DstTy, uint64_t CstVal, Value *DynVal,
+                       Type *SrcTy, Type *DstTy, int64_t CstVal, Value *DynVal,
                        size_t SmallerBitWidths, Value *Src) {
   SmallVector<Value *, 2> Idxs;
 
@@ -1336,11 +1372,11 @@ GetIdxsForTyFromOffset(const DataLayout &DataLayout, IRBuilder<> &Builder,
 
   if (DynVal == nullptr) {
     Type *Ty = SrcTy;
-    CstVal *= SmallerBitWidths;
+    CstVal *= (int64_t)SmallerBitWidths;
     if (startIdx == 0) {
       auto size = SizeInBits(DataLayout, Ty);
-      Idxs.push_back(Builder.getInt32(CstVal / size));
-      CstVal %= size;
+      Idxs.push_back(Builder.getInt32(CstVal / (int64_t)size));
+      CstVal %= (int64_t)size;
     }
     CstVal =
         GoThroughTypeAtOffset(DataLayout, Builder, Ty, DstTy, CstVal, &Idxs);
@@ -1359,11 +1395,11 @@ GetIdxsForTyFromOffset(const DataLayout &DataLayout, IRBuilder<> &Builder,
         BitcastUtils::getEleTypesBitWidths(SrcTy, DataLayout, DstTy);
     size_t NewSmallerBitWidths = TyBitWidths[TyBitWidths.size() - 1];
     if (NewSmallerBitWidths <= SmallerBitWidths) {
-      CstVal *= SmallerBitWidths / NewSmallerBitWidths;
+      CstVal *= (int64_t)SmallerBitWidths / (int64_t)NewSmallerBitWidths;
       DynVal =
           CreateMul(Builder, SmallerBitWidths / NewSmallerBitWidths, DynVal);
     } else {
-      CstVal /= NewSmallerBitWidths / SmallerBitWidths;
+      CstVal /= (int64_t)NewSmallerBitWidths / (int64_t)SmallerBitWidths;
       DynVal =
           CreateDiv(Builder, NewSmallerBitWidths / SmallerBitWidths, DynVal);
     }
